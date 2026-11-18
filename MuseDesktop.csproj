@@ -13,7 +13,7 @@
     <AssemblyName>Muse</AssemblyName>
     <RootNamespace>MuseDesktop</RootNamespace>
     <ApplicationIcon>app.ico</ApplicationIcon>
-    <Version>2.3.1</Version>
+    <Version>2.4.0</Version>
     <Product>Muse</Product>
     <Description>Muse desktop app for Windows on ARM — muse.ai in its own window, plus the Muse Bridge for local files, Resolve and Adobe Express.</Description>
   </PropertyGroup>

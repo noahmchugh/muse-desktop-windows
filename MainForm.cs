@@ -41,9 +41,20 @@ public sealed class MainForm : Form
     private BridgeServer? _bridge;
     private NotifyIcon? _tray;
     private ExpressForm? _expressForm;
-    private Button _btnBack = null!;
-    private Button _btnForward = null!;
-    private Label _urlLabel = null!;
+
+    // The Standard shell: one slim top bar, no rail, no address bar.
+    private ChromePalette _palette = Chrome.For("Dark");
+    private Panel _topBar = null!;
+    private Panel _hairline = null!;
+    private Label _wordmark = null!;
+    private Button _btnSettings = null!;
+    private Button _btnMax = null!;
+    private Button _btnClose = null!;
+    private Panel _bridgeDot = null!;
+    private Label _bridgeLabel = null!;
+    private Color _dotColor = Chrome.StatusOff;
+    private readonly System.Windows.Forms.Timer _statusTimer = new() { Interval = 2000 };
+    private SettingsForm? _settingsForm;
 
     public MainForm()
     {
@@ -51,14 +62,26 @@ public sealed class MainForm : Form
         Width = 1240;
         Height = 820;
         MinimumSize = new Size(480, 360);
+        // Borderless: the app draws its own slim top bar with the
+        // caption buttons in it (the standard desktop-app shell).
+        // The form's padding leaves a thin frame of its own surface
+        // around the content, which doubles as the resize grip.
+        FormBorderStyle = FormBorderStyle.None;
+        Padding = new Padding(Chrome.BorderWidth, 0, Chrome.BorderWidth, Chrome.BorderWidth);
         Controls.Add(_web);
 
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
-        BuildNavBar();
-        StartBridge();
         _settings = AppSettings.Load(AppSettingsPath);
+        _palette = Chrome.For(_settings.FrameShade);
+        BackColor = _palette.Border;
+        BuildTopBar();
+        StartBridge();
         ApplyStartOnLogin();
+        TopMost = _settings.AlwaysOnTop;
         SetupTray();
+        _statusTimer.Tick += (_, _) => UpdateBridgeStatus();
+        _statusTimer.Start();
+        UpdateBridgeStatus();
 
         RestoreSavedBounds();
 
@@ -76,7 +99,20 @@ public sealed class MainForm : Form
     {
         if (WindowState == FormWindowState.Minimized)
         {
-            Hide();
+            if (_settings.MinimizeToTray)
+            {
+                Hide();
+            }
+            return;
+        }
+        // A maximized borderless window drops the resize frame so
+        // the page reaches the screen edges.
+        Padding = WindowState == FormWindowState.Maximized
+            ? new Padding(0)
+            : new Padding(Chrome.BorderWidth, 0, Chrome.BorderWidth, Chrome.BorderWidth);
+        if (_btnMax is not null)
+        {
+            _btnMax.Text = WindowState == FormWindowState.Maximized ? "\uE923" : "\uE922";
         }
     }
 
@@ -93,147 +129,267 @@ public sealed class MainForm : Form
         BringToFront();
     }
 
-    // ---------- Navigation (v2.3, Opera GX style) ----------
-    // Following a link used to strand the user on the target page with no way
-    // back to chat short of restarting the app. The GX-style sidebar +
-    // Alt+Left / Alt+Right fix that.
+    // ---------- The Standard shell ----------
+    // One slim top bar and nothing else: no sidebar, no address
+    // bar. Navigation lives on the keyboard (Alt+Left / Alt+Right /
+    // Alt+Home / F5, see ProcessCmdKey) and the bridge's everyday
+    // state sits in the bar where it can be seen at a glance.
 
-    private void BuildNavBar()
+    private void BuildTopBar()
     {
-        // v2.3 — Opera GX style: the horizontal bar is gone.
-        // GX's signature is a slim LEFT SIDEBAR of icon buttons on
-        // near-black, neon-red accents, angular chamfered buttons
-        // (GxButton), plus a dark top strip with an omnibox-style
-        // address pill. Icons are Segoe MDL2 Assets glyphs, which
-        // Windows renders at exact size.
-        var iconFont = new Font("Segoe MDL2 Assets", 15f);
         var tips = new ToolTip();
-
-        GxButton SideButton(string glyph, string tip, Action onClick)
+        _topBar = new Panel
         {
-            var btn = new GxButton
+            Dock = DockStyle.Top,
+            Height = 40,
+            BackColor = _palette.Bar,
+        };
+
+        // Left: the app's own mark and name.
+        var iconBox = new PictureBox
+        {
+            Location = new Point(11, 10),
+            Size = new Size(20, 20),
+            SizeMode = PictureBoxSizeMode.Zoom,
+        };
+        try { iconBox.Image = Icon?.ToBitmap(); } catch { }
+        _topBar.Controls.Add(iconBox);
+        _wordmark = new Label
+        {
+            Text = "Muse",
+            Location = new Point(39, 0),
+            Height = 40,
+            AutoSize = true,
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = _palette.Text,
+            Font = new Font("Segoe UI", 10.5f),
+        };
+        _topBar.Controls.Add(_wordmark);
+
+        // Right cluster, laid out from the right edge: caption
+        // buttons, then Settings, then the bridge status.
+        Button CaptionButton(string glyph, string tip)
+        {
+            var btn = new Button
             {
                 Text = glyph,
-                Size = new Size(46, 46),
-                Font = iconFont,
+                Size = new Size(46, 40),
+                FlatStyle = FlatStyle.Flat,
+                Font = new Font("Segoe MDL2 Assets", 10f),
+                ForeColor = _palette.Text,
+                BackColor = Color.Transparent,
+                TabStop = false,
             };
+            btn.FlatAppearance.BorderSize = 0;
+            btn.FlatAppearance.MouseOverBackColor = _palette.Hover;
+            btn.FlatAppearance.MouseDownBackColor = _palette.Field;
             tips.SetToolTip(btn, tip);
-            btn.Click += (_, _) => onClick();
             return btn;
         }
 
-        // --- Sidebar (docked first: full height on the left) ---
-        var sidebar = new Panel
-        {
-            Dock = DockStyle.Left,
-            Width = 60,
-            BackColor = Color.FromArgb(11, 11, 18),
-        };
-        var accent = new Panel
-        {
-            Dock = DockStyle.Right,
-            Width = 2,
-            BackColor = GxButton.GxRed,
-        };
-        sidebar.Controls.Add(accent);
+        var btnMin = CaptionButton("\uE921", "Minimize");
+        btnMin.Click += (_, _) => WindowState = FormWindowState.Minimized;
+        _btnMax = CaptionButton("\uE922", "Maximize");
+        _btnMax.Click += (_, _) => ToggleMaximize();
+        _btnClose = CaptionButton("\uE8BB", "Close");
+        _btnClose.FlatAppearance.MouseOverBackColor = Chrome.CloseHover;
+        _btnClose.Click += (_, _) => Close();
 
-        var topGroup = new Panel { Dock = DockStyle.Top, Height = 238, BackColor = Color.Transparent };
-        _btnBack = SideButton("\uE72B", "Back (Alt+Left)", () =>
+        _btnSettings = new Button
         {
-            if (_web.CanGoBack) _web.GoBack();
-        });
-        _btnBack.Location = new Point(6, 12);
-        _btnForward = SideButton("\uE72A", "Forward (Alt+Right)", () =>
-        {
-            if (_web.CanGoForward) _web.GoForward();
-        });
-        _btnForward.Location = new Point(6, 66);
-        var btnReload = SideButton("\uE72C", "Reload (F5)", () => _web.Reload());
-        btnReload.Location = new Point(6, 120);
-        var btnHome = SideButton("\uE80F", "Back to Muse chat (Alt+Home)", () =>
-        {
-            _web.Source = new Uri(HomeUrl);
-        });
-        btnHome.Location = new Point(6, 174);
-        topGroup.Controls.Add(_btnBack);
-        topGroup.Controls.Add(_btnForward);
-        topGroup.Controls.Add(btnReload);
-        topGroup.Controls.Add(btnHome);
-        sidebar.Controls.Add(topGroup);
-
-        var bottomGroup = new Panel { Dock = DockStyle.Bottom, Height = 116, BackColor = Color.Transparent };
-        var btnExpress = SideButton("\uE8B9", "Adobe Express window", () => ShowExpressWindow());
-        btnExpress.Location = new Point(6, 6);
-        var btnBridge = SideButton("\uE713", "Bridge status", () => ShowBridgeStatus());
-        btnBridge.Location = new Point(6, 60);
-        bottomGroup.Controls.Add(btnExpress);
-        bottomGroup.Controls.Add(btnBridge);
-        sidebar.Controls.Add(bottomGroup);
-
-        // --- Top strip with the address pill ---
-        var topBar = new Panel
-        {
-            Dock = DockStyle.Top,
-            Height = 46,
-            BackColor = Color.FromArgb(15, 15, 23),
+            Text = "\uE713",
+            Size = new Size(40, 40),
+            FlatStyle = FlatStyle.Flat,
+            Font = new Font("Segoe MDL2 Assets", 13f),
+            ForeColor = _palette.Text,
+            BackColor = Color.Transparent,
+            TabStop = false,
         };
-        var wordmark = new Label
+        _btnSettings.FlatAppearance.BorderSize = 0;
+        _btnSettings.FlatAppearance.MouseOverBackColor = _palette.Hover;
+        _btnSettings.FlatAppearance.MouseDownBackColor = _palette.Field;
+        tips.SetToolTip(_btnSettings, "Settings");
+        _btnSettings.Click += (_, _) => ShowSettings();
+
+        // Bridge status: a dot and a word. Green on, amber paused,
+        // red error, gray off. Clicking opens the full status.
+        _bridgeDot = new Panel { Size = new Size(10, 10) };
+        _bridgeDot.Paint += (_, e) =>
         {
-            Text = "MUSE",
-            Location = new Point(14, 13),
+            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            using var brush = new SolidBrush(_dotColor);
+            e.Graphics.FillEllipse(brush, 0, 0, 9, 9);
+        };
+        _bridgeLabel = new Label
+        {
+            Text = "Bridge off",
+            Height = 40,
             AutoSize = true,
-            ForeColor = GxButton.GxRed,
-            Font = new Font("Segoe UI", 11f, FontStyle.Bold | FontStyle.Italic),
-        };
-        topBar.Controls.Add(wordmark);
-
-        var pill = new Panel
-        {
-            Location = new Point(92, 8),
-            Height = 30,
-            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
-            BackColor = Color.FromArgb(26, 26, 40),
-        };
-        pill.Paint += (_, e) =>
-        {
-            using var pen = new Pen(Color.FromArgb(58, 58, 84));
-            e.Graphics.DrawRectangle(pen, 0, 0, pill.Width - 1, pill.Height - 1);
-            using var accentBrush = new SolidBrush(GxButton.GxRed);
-            e.Graphics.FillRectangle(accentBrush, 0, 0, 3, pill.Height);
-        };
-        _urlLabel = new Label
-        {
-            Location = new Point(14, 6),
-            AutoSize = false,
-            Anchor = AnchorStyles.Left | AnchorStyles.Right | AnchorStyles.Top,
-            ForeColor = Color.FromArgb(198, 198, 216),
+            TextAlign = ContentAlignment.MiddleLeft,
+            ForeColor = _palette.SubText,
             Font = new Font("Segoe UI", 9.5f),
-            Text = HomeUrl,
+            Cursor = Cursors.Hand,
         };
-        pill.Controls.Add(_urlLabel);
-        topBar.Controls.Add(pill);
-        topBar.Resize += (_, _) =>
-        {
-            pill.Width = Math.Max(120, topBar.Width - 92 - 14);
-            if (_urlLabel is not null) _urlLabel.Width = Math.Max(80, pill.Width - 24);
-        };
+        tips.SetToolTip(_bridgeLabel, "Bridge status — click for details");
+        tips.SetToolTip(_bridgeDot, "Bridge status — click for details");
+        _bridgeLabel.Click += (_, _) => ShowBridgeStatus();
+        _bridgeDot.Click += (_, _) => ShowBridgeStatus();
 
-        // Dock order matters: add the top strip first, then the sidebar,
-        // so the sidebar claims the full-height left edge (GX layout)
-        // and the strip fills the top of what remains.
-        Controls.Add(topBar);
-        Controls.Add(sidebar);
-        UpdateNavState();
+        _hairline = new Panel
+        {
+            Dock = DockStyle.Bottom,
+            Height = 1,
+            BackColor = _palette.Border,
+        };
+        _topBar.Controls.Add(_hairline);
+
+        _topBar.Resize += (_, _) => LayoutTopBarRight();
+        Controls.Add(_topBar);
+        LayoutTopBarRight();
+
+        // The bar is the window's handle: drag to move, double-click
+        // to maximize, drag the very top edge to resize upward.
+        AttachDrag(_topBar);
+        AttachDrag(_wordmark);
+        AttachDrag(iconBox);
+
+        void LayoutTopBarRight()
+        {
+            var x = _topBar.Width;
+            foreach (var btn in new[] { _btnClose, _btnMax, btnMin })
+            {
+                x -= btn.Width;
+                btn.Location = new Point(x, 0);
+                if (!btn.IsHandleCreated && !_topBar.Controls.Contains(btn))
+                {
+                    _topBar.Controls.Add(btn);
+                }
+                btn.BringToFront();
+            }
+            x -= _btnSettings.Width;
+            _btnSettings.Location = new Point(x, 0);
+            if (!_topBar.Controls.Contains(_btnSettings)) _topBar.Controls.Add(_btnSettings);
+            _btnSettings.BringToFront();
+            // Bridge cluster right-aligned against the Settings button.
+            var labelWidth = _bridgeLabel.PreferredWidth;
+            _bridgeLabel.Location = new Point(x - labelWidth - 8, 0);
+            if (!_topBar.Controls.Contains(_bridgeLabel)) _topBar.Controls.Add(_bridgeLabel);
+            _bridgeDot.Location = new Point(x - labelWidth - 8 - 16, 15);
+            if (!_topBar.Controls.Contains(_bridgeDot)) _topBar.Controls.Add(_bridgeDot);
+        }
     }
 
+    private void AttachDrag(Control control)
+    {
+        control.MouseDown += (_, e) =>
+        {
+            if (e.Button != MouseButtons.Left)
+            {
+                return;
+            }
+            if (e.Clicks == 2)
+            {
+                ToggleMaximize();
+                return;
+            }
+            // The top few pixels of the bar resize the window upward
+            // instead of dragging it.
+            var dragPoint = control.PointToScreen(e.Location);
+            var formPoint = PointToClient(dragPoint);
+            var ht = 2; // HTCAPTION
+            if (WindowState == FormWindowState.Normal && formPoint.Y <= 4)
+            {
+                ht = formPoint.X < 16 ? 13 : formPoint.X > Width - 16 ? 14 : 12;
+            }
+            ReleaseCapture();
+            SendMessage(Handle, 0x00A1, (IntPtr)ht, IntPtr.Zero);
+        };
+    }
+
+    private void ToggleMaximize()
+    {
+        if (WindowState == FormWindowState.Maximized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+        else
+        {
+            MaximizedBounds = Screen.FromControl(this).WorkingArea;
+            WindowState = FormWindowState.Maximized;
+        }
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool ReleaseCapture();
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    // Recolors the chrome after the frame shade changes in Settings.
+    private void ApplyChrome()
+    {
+        _palette = Chrome.For(_settings.FrameShade);
+        BackColor = _palette.Border;
+        _topBar.BackColor = _palette.Bar;
+        _hairline.BackColor = _palette.Border;
+        _wordmark.ForeColor = _palette.Text;
+        _bridgeLabel.ForeColor = _palette.SubText;
+        foreach (var btn in _topBar.Controls.OfType<Button>())
+        {
+            btn.ForeColor = _palette.Text;
+            btn.FlatAppearance.MouseOverBackColor =
+                btn == _btnClose ? Chrome.CloseHover : _palette.Hover;
+            btn.FlatAppearance.MouseDownBackColor = _palette.Field;
+        }
+    }
+
+    // The WebView events still call this on every navigation; the
+    // nav buttons and URL it used to refresh are gone, so it now
+    // only keeps the bridge status current.
     private void UpdateNavState()
     {
-        if (_btnBack is null) return;
-        _btnBack.Enabled = _web.CanGoBack;
-        _btnForward.Enabled = _web.CanGoForward;
-        _btnBack.ForeColor = _btnBack.Enabled ? Color.White : Color.FromArgb(120, 118, 160);
-        _btnForward.ForeColor = _btnForward.Enabled ? Color.White : Color.FromArgb(120, 118, 160);
-        try { _urlLabel.Text = _web.Source?.ToString() ?? HomeUrl; } catch { }
+        UpdateBridgeStatus();
+    }
+
+    private void UpdateBridgeStatus()
+    {
+        if (_bridgeLabel is null)
+        {
+            return;
+        }
+        string text;
+        if (_bridge is null)
+        {
+            text = "Bridge off";
+            _dotColor = Chrome.StatusOff;
+        }
+        else if (_bridge.Paused)
+        {
+            text = "Bridge paused";
+            _dotColor = Chrome.StatusAmber;
+        }
+        else if (_bridge.Running)
+        {
+            text = "Bridge on";
+            _dotColor = Chrome.StatusGreen;
+        }
+        else
+        {
+            text = "Bridge error";
+            _dotColor = Chrome.StatusRed;
+        }
+        if (_bridgeLabel.Text != text)
+        {
+            _bridgeLabel.Text = text;
+        }
+        if (_btnSettings is not null)
+        {
+            _bridgeLabel.Location = new Point(
+                _btnSettings.Left - _bridgeLabel.PreferredWidth - 8, 0);
+            _bridgeDot.Location = new Point(_bridgeLabel.Left - 16, 15);
+        }
+        _bridgeDot.Invalidate();
+        UpdateTrayText();
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -269,6 +425,36 @@ public sealed class MainForm : Form
 
     protected override void WndProc(ref Message m)
     {
+        // Borderless resize: the form's own frame (its padding) is
+        // the grip. Child controls cover the rest of the window, so
+        // a client-area hit here is always on that frame.
+        if (m.Msg == 0x0084) // WM_NCHITTEST
+        {
+            base.WndProc(ref m);
+            if (m.Result.ToInt32() == 1 && WindowState == FormWindowState.Normal)
+            {
+                var lp = m.LParam.ToInt32();
+                var screen = new Point(
+                    unchecked((short)(lp & 0xFFFF)),
+                    unchecked((short)(lp >> 16)));
+                var p = PointToClient(screen);
+                var grip = Chrome.BorderWidth + 2;
+                var bottom = p.Y >= Height - grip;
+                var left = p.X < grip;
+                var right = p.X >= Width - grip;
+                var hit = bottom && left ? 16 // HTBOTTOMLEFT
+                    : bottom && right ? 17 // HTBOTTOMRIGHT
+                    : bottom ? 15 // HTBOTTOM
+                    : left ? 10 // HTLEFT
+                    : right ? 11 // HTRIGHT
+                    : 0;
+                if (hit != 0)
+                {
+                    m.Result = (IntPtr)hit;
+                }
+            }
+            return;
+        }
         if (m.Msg == WmHotkey)
         {
             var id = m.WParam.ToInt32();
@@ -533,6 +719,7 @@ public sealed class MainForm : Form
         try
         {
             Directory.CreateDirectory(_dataDir);
+            _bridge?.Dispose();
             _bridge = new BridgeServer(_dataDir);
             BridgeServer.UiThreadInvoke = action => BeginInvoke(action);
             _bridge.Start();
@@ -566,6 +753,68 @@ public sealed class MainForm : Form
     }
 
     private string? LastBridgeError { get; set; }
+
+    // ---------- Settings plumbing (used by SettingsForm) ----------
+
+    internal AppSettings Settings => _settings;
+
+    internal BridgeServer? Bridge => _bridge;
+
+    internal string? BridgeError => LastBridgeError ?? _bridge?.LastError;
+
+    internal string BridgeLogPath => Path.Combine(_dataDir, "bridge-log.jsonl");
+
+    // One funnel for every preference change: persist, then apply
+    // each live effect (hotkeys, login entry, topmost, chrome), so
+    // the tray toggles and the Settings form can never drift apart.
+    internal void ApplySettings()
+    {
+        _settings.Save(AppSettingsPath);
+        RegisterConfiguredHotkeys();
+        ApplyStartOnLogin();
+        TopMost = _settings.AlwaysOnTop;
+        ApplyChrome();
+        if (_hotkeysItem is not null) _hotkeysItem.Checked = _settings.HotkeysEnabled;
+        if (_startOnLoginItem is not null) _startOnLoginItem.Checked = _settings.StartOnLogin;
+        UpdateBridgeStatus();
+    }
+
+    internal void ResetSettings()
+    {
+        _settings = new AppSettings();
+        ApplySettings();
+    }
+
+    internal void RefreshBridgeStatus() => UpdateBridgeStatus();
+
+    internal void RestartBridge()
+    {
+        try
+        {
+            _bridge?.Dispose();
+            _bridge = null;
+            // Give the listener a beat to release the port before
+            // the new server binds it.
+            System.Threading.Thread.Sleep(200);
+            StartBridge();
+        }
+        catch (Exception ex)
+        {
+            LastBridgeError = ex.Message;
+        }
+        UpdateBridgeStatus();
+    }
+
+    private void ShowSettings()
+    {
+        if (_settingsForm is not null && !_settingsForm.IsDisposed)
+        {
+            _settingsForm.Activate();
+            return;
+        }
+        _settingsForm = new SettingsForm(this);
+        _settingsForm.Show(this);
+    }
 
     // ---------- Start on login (opt-in) ----------
 
@@ -618,6 +867,7 @@ public sealed class MainForm : Form
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Bridge status…", null, (_, _) => ShowBridgeStatus());
         menu.Items.Add("Open Adobe Express window", null, (_, _) => ShowExpressWindow());
+        menu.Items.Add("Settings…", null, (_, _) => ShowSettings());
         menu.Items.Add(new ToolStripSeparator());
         var pauseItem = new ToolStripMenuItem("Pause bridge");
         pauseItem.Click += (_, _) =>

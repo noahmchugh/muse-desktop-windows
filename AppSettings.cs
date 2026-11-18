@@ -28,6 +28,20 @@ internal sealed class AppSettings
     // at the user's own request.
     public bool StartOnLogin { get; set; }
 
+    // Minimizing hides the window into the tray (the default, so a
+    // voice call survives untouched). Turning it off restores the
+    // ordinary minimize-to-taskbar behavior.
+    public bool MinimizeToTray { get; set; } = true;
+
+    // Keep the window above other windows (games excluded — a
+    // fullscreen game still wins). Off by default.
+    public bool AlwaysOnTop { get; set; }
+
+    // Frame shade for the shell chrome: "Dark" (default),
+    // "Graphite", or "Light". The page inside is muse.ai and is
+    // never restyled; this only dresses the window's own frame.
+    public string FrameShade { get; set; } = "Dark";
+
     public static AppSettings Load(string path)
     {
         try
