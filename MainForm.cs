@@ -51,6 +51,19 @@ public sealed class MainForm : Form
         FormClosing += OnClosing;
     }
 
+    // Called by Program when a second launch asks this instance to
+    // come to the front instead of starting alongside it.
+    public void Surface()
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            WindowState = FormWindowState.Normal;
+        }
+        Show();
+        Activate();
+        BringToFront();
+    }
+
     // ---------- Navigation (v2.3, Opera GX style) ----------
     // Following a link used to strand the user on the target page with no way
     // back to chat short of restarting the app. The GX-style sidebar +
