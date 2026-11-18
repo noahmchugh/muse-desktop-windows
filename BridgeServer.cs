@@ -101,7 +101,7 @@ public sealed class BridgeServer : IDisposable
         _dataDir = dataDir;
         Directory.CreateDirectory(dataDir);
         Token = LoadOrCreateToken();
-        _listener = new TcpListener(IPAddress.Any, Port);
+        _listener = new TcpListener(IPAddress.Loopback, Port);
     }
 
     private string TokenPath => Path.Combine(_dataDir, "bridge-token.txt");
