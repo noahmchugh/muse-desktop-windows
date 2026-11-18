@@ -61,6 +61,20 @@ public sealed class MainForm : Form
 
         Load += OnLoad;
         FormClosing += OnClosing;
+        Resize += OnResize;
+    }
+
+    // Minimizing tucks the window into the tray instead of the
+    // taskbar. The form is only hidden, never closed or disposed,
+    // so the WebView session — including a live voice call — keeps
+    // running untouched. The tray icon (or a second launch) brings
+    // it back through Surface().
+    private void OnResize(object? sender, EventArgs e)
+    {
+        if (WindowState == FormWindowState.Minimized)
+        {
+            Hide();
+        }
     }
 
     // Called by Program when a second launch asks this instance to
@@ -476,6 +490,9 @@ public sealed class MainForm : Form
     private void SetupTray()
     {
         var menu = new ContextMenuStrip();
+        menu.Items.Add("Open Muse", null, (_, _) => Surface());
+        menu.Items.Add("Mute / unmute", null, (_, _) => _ = ToggleMuteAsync());
+        menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Bridge status…", null, (_, _) => ShowBridgeStatus());
         menu.Items.Add("Open Adobe Express window", null, (_, _) => ShowExpressWindow());
         menu.Items.Add(new ToolStripSeparator());
@@ -508,7 +525,7 @@ public sealed class MainForm : Form
             ContextMenuStrip = menu,
             Visible = true,
         };
-        _tray.DoubleClick += (_, _) => ShowBridgeStatus();
+        _tray.DoubleClick += (_, _) => Surface();
         UpdateTrayText();
     }
 
