@@ -253,6 +253,16 @@ public sealed class MainForm : Form
         AttachDrag(_wordmark);
         AttachDrag(iconBox);
 
+        _topBar.Controls.Add(btnMin);
+        _topBar.Controls.Add(_btnMax);
+        _topBar.Controls.Add(_btnClose);
+        _topBar.Controls.Add(_btnSettings);
+        _topBar.Controls.Add(_bridgeLabel);
+        _topBar.Controls.Add(_bridgeDot);
+
+        // Positions only. Controls are added once, above — churning
+        // membership or z-order on every resize is wasted work and
+        // can feed layout loops.
         void LayoutTopBarRight()
         {
             var x = _topBar.Width;
@@ -260,22 +270,12 @@ public sealed class MainForm : Form
             {
                 x -= btn.Width;
                 btn.Location = new Point(x, 0);
-                if (!btn.IsHandleCreated && !_topBar.Controls.Contains(btn))
-                {
-                    _topBar.Controls.Add(btn);
-                }
-                btn.BringToFront();
             }
             x -= _btnSettings.Width;
             _btnSettings.Location = new Point(x, 0);
-            if (!_topBar.Controls.Contains(_btnSettings)) _topBar.Controls.Add(_btnSettings);
-            _btnSettings.BringToFront();
-            // Bridge cluster right-aligned against the Settings button.
             var labelWidth = _bridgeLabel.PreferredWidth;
             _bridgeLabel.Location = new Point(x - labelWidth - 8, 0);
-            if (!_topBar.Controls.Contains(_bridgeLabel)) _topBar.Controls.Add(_bridgeLabel);
             _bridgeDot.Location = new Point(x - labelWidth - 8 - 16, 15);
-            if (!_topBar.Controls.Contains(_bridgeDot)) _topBar.Controls.Add(_bridgeDot);
         }
     }
 
@@ -351,6 +351,12 @@ public sealed class MainForm : Form
         UpdateBridgeStatus();
     }
 
+    private string _lastBridgeText = "";
+
+    // Called from WebView events (which can fire in bursts during
+    // page activity) and a 2-second timer. It must be free when
+    // nothing changed: the first version touched the label, the
+    // dot, and the tray icon on every call.
     private void UpdateBridgeStatus()
     {
         if (_bridgeLabel is null)
@@ -358,30 +364,34 @@ public sealed class MainForm : Form
             return;
         }
         string text;
+        Color color;
         if (_bridge is null)
         {
             text = "Bridge off";
-            _dotColor = Chrome.StatusOff;
+            color = Chrome.StatusOff;
         }
         else if (_bridge.Paused)
         {
             text = "Bridge paused";
-            _dotColor = Chrome.StatusAmber;
+            color = Chrome.StatusAmber;
         }
         else if (_bridge.Running)
         {
             text = "Bridge on";
-            _dotColor = Chrome.StatusGreen;
+            color = Chrome.StatusGreen;
         }
         else
         {
             text = "Bridge error";
-            _dotColor = Chrome.StatusRed;
+            color = Chrome.StatusRed;
         }
-        if (_bridgeLabel.Text != text)
+        if (text == _lastBridgeText)
         {
-            _bridgeLabel.Text = text;
+            return;
         }
+        _lastBridgeText = text;
+        _dotColor = color;
+        _bridgeLabel.Text = text;
         if (_btnSettings is not null)
         {
             _bridgeLabel.Location = new Point(
