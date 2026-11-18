@@ -774,6 +774,36 @@ public sealed class BridgeServer : IDisposable
         return FileEntry(path);
     }
 
+    private const int MaxSearchDepth = 32;
+
+    // Identity of a directory for the search walk: its full path, or —
+    // for a junction or symlink — the full path of its target, so a
+    // link that points back at an ancestor is recognised as a place
+    // the walk has already been instead of a new folder to descend.
+    private static string DirectoryKey(string path)
+    {
+        var full = Path.GetFullPath(path);
+        try
+        {
+            var info = new DirectoryInfo(full);
+            if ((info.Attributes & FileAttributes.ReparsePoint) != 0 && info.LinkTarget is not null)
+            {
+                var target = info.LinkTarget;
+                if (!Path.IsPathFullyQualified(target))
+                {
+                    var parent = Path.GetDirectoryName(full);
+                    if (parent is not null)
+                    {
+                        target = Path.GetFullPath(Path.Combine(parent, target));
+                    }
+                }
+                return target.TrimEnd('\\', '/');
+            }
+        }
+        catch { /* fall back to the plain path */ }
+        return full.TrimEnd('\\', '/');
+    }
+
     private object FilesSearch(Request req)
     {
         var root = RequirePath(req, "root");
@@ -781,11 +811,13 @@ public sealed class BridgeServer : IDisposable
         var max = GetInt(req, "max", 200);
         if (!Directory.Exists(root)) throw new BridgeException("folder not found: " + root);
         var results = new List<object>();
-        var pending = new Stack<string>();
-        pending.Push(root);
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new Stack<(string Dir, int Depth)>();
+        visited.Add(DirectoryKey(root));
+        pending.Push((root, 0));
         while (pending.Count > 0 && results.Count < max)
         {
-            var dir = pending.Pop();
+            var (dir, depth) = pending.Pop();
             try
             {
                 foreach (var entry in Directory.EnumerateFileSystemEntries(dir, pattern))
@@ -793,9 +825,15 @@ public sealed class BridgeServer : IDisposable
                     results.Add(FileEntry(entry));
                     if (results.Count >= max) break;
                 }
-                foreach (var sub in Directory.EnumerateDirectories(dir))
+                if (depth < MaxSearchDepth)
                 {
-                    pending.Push(sub);
+                    foreach (var sub in Directory.EnumerateDirectories(dir))
+                    {
+                        if (visited.Add(DirectoryKey(sub)))
+                        {
+                            pending.Push((sub, depth + 1));
+                        }
+                    }
                 }
             }
             catch { /* skip unreadable folders */ }
