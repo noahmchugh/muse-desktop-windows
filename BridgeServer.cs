@@ -32,8 +32,11 @@ public sealed class BridgeServer : IDisposable
     private const long MaxReadFileBytes = 25 * 1024 * 1024;
     private const long MaxLogBytes = 5 * 1024 * 1024;
     private const int LogBackupCount = 3;
+    private const int MaxConcurrentConnections = 16;
+    private const int RequestReadDeadlineSeconds = 60;
 
     private readonly TcpListener _listener;
+    private readonly SemaphoreSlim _connectionSlots = new(MaxConcurrentConnections, MaxConcurrentConnections);
     private readonly CancellationTokenSource _stop = new();
     private readonly string _dataDir;
     private readonly object _logLock = new();
@@ -167,6 +170,18 @@ public sealed class BridgeServer : IDisposable
     {
         while (!_stop.IsCancellationRequested)
         {
+            // Take a connection slot before accepting, so at most
+            // MaxConcurrentConnections clients are ever being handled.
+            // Extra callers wait in the listen backlog instead of each
+            // spawning a handler (and, later, a body buffer) of their own.
+            try
+            {
+                await _connectionSlots.WaitAsync(_stop.Token);
+            }
+            catch
+            {
+                break;
+            }
             TcpClient client;
             try
             {
@@ -174,6 +189,7 @@ public sealed class BridgeServer : IDisposable
             }
             catch
             {
+                _connectionSlots.Release();
                 break;
             }
             _ = Task.Run(() => HandleClient(client));
@@ -188,11 +204,12 @@ public sealed class BridgeServer : IDisposable
         public string Path = "";
         public string? Body;
         public string? Auth;
+        public long ContentLength;
         public JsonDocument? Json;
         public JsonElement Root => Json!.RootElement;
     }
 
-    private void HandleClient(TcpClient client)
+    private async Task HandleClient(TcpClient client)
     {
         using (client)
         {
@@ -200,30 +217,61 @@ public sealed class BridgeServer : IDisposable
             {
                 client.ReceiveTimeout = 30000;
                 var stream = client.GetStream();
-                var req = ReadRequest(stream);
+
+                // The request must fully arrive within the deadline, so
+                // a caller dripping headers or a body forever is dropped
+                // instead of holding a connection slot. The deadline
+                // only covers receiving the request: a long-running
+                // route (an exec call, say) may legitimately take
+                // minutes to answer once its request is in.
+                using var deadline = new CancellationTokenSource(
+                    TimeSpan.FromSeconds(RequestReadDeadlineSeconds));
+                var req = await ReadRequestHead(stream, deadline.Token);
                 if (req is null)
                 {
                     return;
                 }
 
+                // Reject a bad token as soon as the headers are in,
+                // before the body buffer is allocated and read.
+                // /health stays open, as before.
+                if (NormalizeRoutePath(req.Path) != "/health" && !IsAuthorized(req))
+                {
+                    RecordAuthFailure(req);
+                    WriteResponse(stream, 401, Err("missing or wrong bridge token"));
+                    return;
+                }
+
+                await ReadRequestBody(stream, req, deadline.Token);
                 var (status, payload) = Dispatch(req);
                 WriteResponse(stream, status, payload);
             }
             catch
             {
-                // Client went away mid-request; nothing useful to do.
+                // Client went away mid-request, or the read deadline
+                // hit; nothing useful to do.
+            }
+            finally
+            {
+                _connectionSlots.Release();
             }
         }
     }
 
-    private static Request? ReadRequest(NetworkStream stream)
+    private static async Task<Request?> ReadRequestHead(NetworkStream stream, CancellationToken deadline)
     {
         // Read headers byte by byte until CRLFCRLF (requests are tiny).
         var headerBytes = new List<byte>();
         var window = new byte[4];
-        int b;
-        while ((b = stream.ReadByte()) != -1)
+        var one = new byte[1];
+        while (true)
         {
+            int n = await stream.ReadAsync(one.AsMemory(0, 1), deadline);
+            if (n <= 0)
+            {
+                break;
+            }
+            int b = one[0];
             headerBytes.Add((byte)b);
             window[0] = window[1]; window[1] = window[2]; window[2] = window[3]; window[3] = (byte)b;
             if (window[0] == '\r' && window[1] == '\n' && window[2] == '\r' && window[3] == '\n')
@@ -276,27 +324,42 @@ public sealed class BridgeServer : IDisposable
             }
         }
 
-        if (contentLength > 0)
+        if (contentLength > MaxBodyBytes)
         {
-            if (contentLength > MaxBodyBytes)
-            {
-                return null;
-            }
-            var buf = new byte[contentLength];
-            int read = 0;
-            while (read < buf.Length)
-            {
-                int n = stream.Read(buf, read, buf.Length - read);
-                if (n <= 0) break;
-                read += n;
-            }
-            req.Body = Encoding.UTF8.GetString(buf, 0, read);
-            if (!string.IsNullOrWhiteSpace(req.Body))
-            {
-                try { req.Json = JsonDocument.Parse(req.Body); } catch { /* leave null */ }
-            }
+            return null;
         }
+        req.ContentLength = contentLength;
         return req;
+    }
+
+    private static async Task ReadRequestBody(NetworkStream stream, Request req, CancellationToken deadline)
+    {
+        if (req.ContentLength <= 0)
+        {
+            return;
+        }
+        var buf = new byte[req.ContentLength];
+        int read = 0;
+        while (read < buf.Length)
+        {
+            int n = await stream.ReadAsync(buf.AsMemory(read, buf.Length - read), deadline);
+            if (n <= 0) break;
+            read += n;
+        }
+        req.Body = Encoding.UTF8.GetString(buf, 0, read);
+        if (!string.IsNullOrWhiteSpace(req.Body))
+        {
+            try { req.Json = JsonDocument.Parse(req.Body); } catch { /* leave null */ }
+        }
+    }
+
+    // The route Dispatch matches on: no trailing slash, and the root
+    // path is /health. The early auth check uses the same form so the
+    // two can never disagree about which requests are /health.
+    private static string NormalizeRoutePath(string path)
+    {
+        var p = path.TrimEnd('/');
+        return p.Length == 0 ? "/health" : p;
     }
 
     private static void WriteResponse(NetworkStream stream, int status, string payload)
@@ -418,8 +481,7 @@ public sealed class BridgeServer : IDisposable
 
     private (int, string) Dispatch(Request req)
     {
-        var path = req.Path.TrimEnd('/');
-        if (path.Length == 0) path = "/health";
+        var path = NormalizeRoutePath(req.Path);
 
         if (path == "/health")
         {
