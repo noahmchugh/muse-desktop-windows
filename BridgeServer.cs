@@ -910,7 +910,9 @@ public sealed class BridgeServer : IDisposable
     private object FilesReveal(Request req)
     {
         var path = RequirePath(req);
-        Process.Start(new ProcessStartInfo("explorer.exe", "/select,\"" + path + "\"") { UseShellExecute = true });
+        var psi = new ProcessStartInfo("explorer.exe") { UseShellExecute = true };
+        psi.ArgumentList.Add("/select," + path);
+        Process.Start(psi);
         return new { path, revealed = true };
     }
 
