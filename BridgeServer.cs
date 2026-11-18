@@ -30,6 +30,8 @@ public sealed class BridgeServer : IDisposable
     public const int Port = 8765;
     private const long MaxBodyBytes = 64 * 1024 * 1024;
     private const long MaxReadFileBytes = 25 * 1024 * 1024;
+    private const long MaxLogBytes = 5 * 1024 * 1024;
+    private const int LogBackupCount = 3;
 
     private readonly TcpListener _listener;
     private readonly CancellationTokenSource _stop = new();
@@ -332,18 +334,81 @@ public sealed class BridgeServer : IDisposable
                     path,
                     summary,
                 });
+                RotateLogIfNeeded();
                 File.AppendAllText(LogPath, line + "\n");
             }
         }
         catch { /* logging must never break the bridge */ }
     }
 
-    public string[] RecentLog(int count = 50)
+    // Called with _logLock held, before appending. When the active log
+    // reaches MaxLogBytes, shift the backups (.1 -> .2 -> .3, dropping
+    // the oldest) and move the active file to .1, so logging continues
+    // in a fresh file and the log on disk stays bounded.
+    private void RotateLogIfNeeded()
     {
         try
         {
+            var info = new FileInfo(LogPath);
+            if (!info.Exists || info.Length < MaxLogBytes) return;
+
+            var oldest = LogPath + "." + LogBackupCount;
+            if (File.Exists(oldest)) File.Delete(oldest);
+            for (int i = LogBackupCount - 1; i >= 1; i--)
+            {
+                var source = LogPath + "." + i;
+                if (File.Exists(source)) File.Move(source, LogPath + "." + (i + 1));
+            }
+            File.Move(LogPath, LogPath + ".1");
+        }
+        catch { /* rotation must never break logging */ }
+    }
+
+    public string[] RecentLog(int count = 50)
+    {
+        if (count <= 0) return Array.Empty<string>();
+        try
+        {
             if (!File.Exists(LogPath)) return Array.Empty<string>();
-            var lines = File.ReadAllLines(LogPath);
+
+            // Read backwards from the end of the file in chunks until
+            // enough lines are covered, instead of loading the whole
+            // log into memory just to return its tail.
+            const int ChunkSize = 8192;
+            var chunks = new List<byte[]>();
+            int newlinesNeeded = count + 1;
+            using (var stream = new FileStream(LogPath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+            {
+                long remaining = stream.Length;
+                while (remaining > 0 && newlinesNeeded > 0)
+                {
+                    int toRead = (int)Math.Min(ChunkSize, remaining);
+                    remaining -= toRead;
+                    stream.Seek(remaining, SeekOrigin.Begin);
+                    var buffer = new byte[toRead];
+                    int read = 0;
+                    while (read < toRead)
+                    {
+                        int n = stream.Read(buffer, read, toRead - read);
+                        if (n <= 0) break;
+                        read += n;
+                    }
+                    if (read < toRead) Array.Resize(ref buffer, read);
+                    chunks.Add(buffer);
+                    for (int i = read - 1; i >= 0 && newlinesNeeded > 0; i--)
+                    {
+                        if (buffer[i] == (byte)'\n') newlinesNeeded--;
+                    }
+                }
+            }
+
+            using var memory = new MemoryStream();
+            for (int i = chunks.Count - 1; i >= 0; i--)
+            {
+                memory.Write(chunks[i], 0, chunks[i].Length);
+            }
+            var text = Encoding.UTF8.GetString(memory.ToArray());
+            var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
             return lines.Skip(Math.Max(0, lines.Length - count)).ToArray();
         }
         catch { return Array.Empty<string>(); }
