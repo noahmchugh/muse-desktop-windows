@@ -65,6 +65,18 @@ public sealed class BridgeServer : IDisposable
         return Convert.ToHexString(hash)[..8].ToLowerInvariant();
     }
 
+    // Constant-time check of the full "Bearer <token>" header against the
+    // expected value. Lengths are compared first, so FixedTimeEquals is
+    // only ever called on equal-length inputs and a missing or malformed
+    // header simply fails the check.
+    private bool IsAuthorized(Request req)
+    {
+        var expected = Encoding.UTF8.GetBytes("Bearer " + Token);
+        var provided = Encoding.UTF8.GetBytes(req.Auth ?? "");
+        if (provided.Length != expected.Length) return false;
+        return CryptographicOperations.FixedTimeEquals(provided, expected);
+    }
+
     private void RecordAuthFailure(Request req)
     {
         var auth = req.Auth ?? "";
@@ -349,7 +361,7 @@ public sealed class BridgeServer : IDisposable
             return (200, Ok(new { bridge = "muse", version = "2.3.1", running = Running, paused = Paused }));
         }
 
-        if (req.Auth != "Bearer " + Token)
+        if (!IsAuthorized(req))
         {
             RecordAuthFailure(req);
             return (401, Err("missing or wrong bridge token"));
