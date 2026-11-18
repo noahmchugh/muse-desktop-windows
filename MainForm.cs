@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Text.Json;
+using Microsoft.Win32;
 using Microsoft.Web.WebView2.Core;
 using Microsoft.Web.WebView2.WinForms;
 
@@ -35,6 +36,7 @@ public sealed class MainForm : Form
     private AppSettings _settings = new();
     private bool _hotkeysRegistered;
     private ToolStripMenuItem? _hotkeysItem;
+    private ToolStripMenuItem? _startOnLoginItem;
 
     private BridgeServer? _bridge;
     private NotifyIcon? _tray;
@@ -55,6 +57,7 @@ public sealed class MainForm : Form
         BuildNavBar();
         StartBridge();
         _settings = AppSettings.Load(AppSettingsPath);
+        ApplyStartOnLogin();
         SetupTray();
 
         RestoreSavedBounds();
@@ -477,6 +480,39 @@ public sealed class MainForm : Form
 
     private string? LastBridgeError { get; set; }
 
+    // ---------- Start on login (opt-in) ----------
+
+    private const string RunKeyPath = @"Software\Microsoft\Windows\CurrentVersion\Run";
+    private const string RunValueName = "Muse";
+
+    // Keeps the per-user Run key in line with the setting: the value
+    // exists only while the user has the toggle on, and points at
+    // wherever the app currently runs from. Runs at startup too, so
+    // moving the app heals the entry instead of stranding it.
+    private void ApplyStartOnLogin()
+    {
+        try
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(RunKeyPath, writable: true);
+            if (key is null)
+            {
+                return;
+            }
+            if (_settings.StartOnLogin)
+            {
+                key.SetValue(RunValueName, "\"" + Application.ExecutablePath + "\"");
+            }
+            else
+            {
+                key.DeleteValue(RunValueName, throwOnMissingValue: false);
+            }
+        }
+        catch
+        {
+            // A failed preference must never take the app down.
+        }
+    }
+
     private void ShowExpressWindow()
     {
         _expressForm ??= new ExpressForm(_dataDir);
@@ -517,6 +553,18 @@ public sealed class MainForm : Form
             RegisterConfiguredHotkeys();
         };
         menu.Items.Add(_hotkeysItem);
+        _startOnLoginItem = new ToolStripMenuItem("Start on login")
+        {
+            Checked = _settings.StartOnLogin,
+        };
+        _startOnLoginItem.Click += (_, _) =>
+        {
+            _settings.StartOnLogin = !_settings.StartOnLogin;
+            _startOnLoginItem.Checked = _settings.StartOnLogin;
+            _settings.Save(AppSettingsPath);
+            ApplyStartOnLogin();
+        };
+        menu.Items.Add(_startOnLoginItem);
         menu.Items.Add("Quit Muse", null, (_, _) => Close());
 
         _tray = new NotifyIcon

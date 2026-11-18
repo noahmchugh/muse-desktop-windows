@@ -23,6 +23,11 @@ internal sealed class AppSettings
     public string BringToFrontHotkey { get; set; } = "F9";
     public string MuteHotkey { get; set; } = "F10";
 
+    // Start on login stays off until the user turns it on: the app
+    // otherwise keeps no persistence at all, and that only changes
+    // at the user's own request.
+    public bool StartOnLogin { get; set; }
+
     public static AppSettings Load(string path)
     {
         try
