@@ -9,7 +9,9 @@ using System.Drawing.Imaging;
 using System.IO.Compression;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Automation;
@@ -131,7 +133,11 @@ public sealed class BridgeServer : IDisposable
             if (File.Exists(TokenPath))
             {
                 var existing = File.ReadAllText(TokenPath).Trim();
-                if (existing.Length >= 24)
+                // Accept an existing file only if it holds exactly a
+                // token this app would have generated: 64 hex chars
+                // (32 bytes). Anything else — including a weaker value
+                // planted before first run — is replaced, not adopted.
+                if (IsTokenFormat(existing))
                 {
                     return existing;
                 }
@@ -140,15 +146,57 @@ public sealed class BridgeServer : IDisposable
         catch { /* regenerate below */ }
 
         var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-        File.WriteAllText(TokenPath, token);
+        WriteTokenFile(token);
         return token;
     }
 
     public string RegenerateToken()
     {
         Token = Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant();
-        File.WriteAllText(TokenPath, Token);
+        WriteTokenFile(Token);
         return Token;
+    }
+
+    private static bool IsTokenFormat(string value)
+    {
+        if (value.Length != 64)
+        {
+            return false;
+        }
+        foreach (var c in value)
+        {
+            bool hex = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F');
+            if (!hex) return false;
+        }
+        return true;
+    }
+
+    private void WriteTokenFile(string token)
+    {
+        File.WriteAllText(TokenPath, token);
+        SetOwnerOnlyAcl(TokenPath);
+    }
+
+    // The token unlocks the whole bridge, so its file is restricted to
+    // the current user instead of inheriting the folder's default ACL.
+    // Best effort: a failure here must never break token creation.
+    private static void SetOwnerOnlyAcl(string path)
+    {
+        try
+        {
+            var owner = WindowsIdentity.GetCurrent().User;
+            if (owner is null)
+            {
+                return;
+            }
+            var security = new FileSecurity();
+            security.SetOwner(owner);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                owner, FileSystemRights.FullControl, AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+        }
+        catch { /* token creation matters more than the ACL */ }
     }
 
     public void Start()
