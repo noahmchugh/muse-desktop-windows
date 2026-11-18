@@ -249,6 +249,11 @@ public sealed class MainForm : Form
             var core = _web.CoreWebView2;
             core.Settings.AreDevToolsEnabled = false;
 
+            // Decide permission requests (microphone for voice chat,
+            // camera, location, ...) ourselves instead of leaving the
+            // WebView default in charge.
+            core.PermissionRequested += OnPermissionRequested;
+
             // Links that would open a new window stay inside the app
             // instead — but only for Muse and its sign-in hosts. Any
             // other site opens in the user's default browser rather
@@ -301,6 +306,23 @@ public sealed class MainForm : Form
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
+    }
+
+    // The only permission this window grants is the microphone, and
+    // only to Muse itself (voice chat). Everything else — camera,
+    // location, notifications, and any permission asked for by another
+    // origin — is denied. SavesInProfile stores the decision in the
+    // WebView profile, so the choice is made once instead of the
+    // prompt coming back every session.
+    private void OnPermissionRequested(object? sender, CoreWebView2PermissionRequestedEventArgs args)
+    {
+        var allow = args.PermissionKind == CoreWebView2PermissionKind.Microphone
+            && Uri.TryCreate(args.Uri, UriKind.Absolute, out var origin)
+            && WebNavigation.IsMuseHost(origin.Host);
+        args.State = allow
+            ? CoreWebView2PermissionState.Allow
+            : CoreWebView2PermissionState.Deny;
+        args.SavesInProfile = true;
     }
 
     // ---------- Muse Bridge (v2) ----------
