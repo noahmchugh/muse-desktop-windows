@@ -24,7 +24,7 @@ internal sealed class SettingsForm : Form
     private ChromePalette _pal;
     private bool _loading = true;
 
-    private const int RowHeight = 58;
+    private const int RowHeight = 62;
     private const int SectionHeaderHeight = 30;
     private const int ContentWidth = 500;
 
@@ -91,8 +91,8 @@ internal sealed class SettingsForm : Form
         _status.AutoSize = true;
         _status.Tag = "sub";
         footer.Controls.Add(_status);
-        var reset = MakeButton("Reset to defaults", 128);
-        reset.Location = new Point(268, 12);
+        var reset = MakeButton("Reset to defaults", 150);
+        reset.Location = new Point(248, 12);
         reset.Click += (_, _) =>
         {
             _owner.ResetSettings();
@@ -114,7 +114,7 @@ internal sealed class SettingsForm : Form
 
         // Scroll viewport with one fixed-size content panel inside.
         var scroll = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
-        var content = new Panel { Location = new Point(12, 0), Width = ContentWidth + 8 };
+        var content = new Panel { Location = new Point(8, 0), Width = ContentWidth + 8 };
         scroll.Controls.Add(content);
         Controls.Add(scroll);
         scroll.BringToFront();
@@ -136,7 +136,7 @@ internal sealed class SettingsForm : Form
             try { Process.Start(new ProcessStartInfo("ms-settings:sound") { UseShellExecute = true }); }
             catch { SetStatus("Windows Settings would not open."); }
         };
-        ControlRow(content, ref y, "Microphone", "Muse uses the microphone Windows is set to use.", soundBtn);
+        ControlRow(content, ref y, "Microphone", "Uses the microphone Windows is set to use.", soundBtn);
 
         // --- Bridge ---
         Section(content, ref y, "Bridge");
@@ -150,14 +150,14 @@ internal sealed class SettingsForm : Form
         content.Controls.Add(_bridgeStatus);
         content.Controls.Add(_bridgeDetail);
         y += RowHeight;
-        var restart = MakeButton("Restart bridge", 110);
+        var restart = MakeButton("Restart bridge", 124);
         restart.Location = new Point(8, y + 4);
         restart.Click += (_, _) => { _owner.RestartBridge(); RefreshBridge(); SetStatus("Bridge restarted."); };
         content.Controls.Add(restart);
         _btnPause.Text = "Pause bridge";
         StyleButton(_btnPause);
-        _btnPause.Size = new Size(110, 30);
-        _btnPause.Location = new Point(126, y + 4);
+        _btnPause.Size = new Size(118, 30);
+        _btnPause.Location = new Point(140, y + 4);
         _btnPause.Click += (_, _) =>
         {
             if (_owner.Bridge is null) return;
@@ -166,8 +166,8 @@ internal sealed class SettingsForm : Form
             RefreshBridge();
         };
         content.Controls.Add(_btnPause);
-        var copy = MakeButton("Copy token", 96);
-        copy.Location = new Point(244, y + 4);
+        var copy = MakeButton("Copy token", 108);
+        copy.Location = new Point(266, y + 4);
         copy.Click += (_, _) =>
         {
             if (_owner.Bridge is not null)
@@ -177,8 +177,8 @@ internal sealed class SettingsForm : Form
             }
         };
         content.Controls.Add(copy);
-        var log = MakeButton("Open log", 84);
-        log.Location = new Point(348, y + 4);
+        var log = MakeButton("Open log", 94);
+        log.Location = new Point(382, y + 4);
         log.Click += (_, _) =>
         {
             try { Process.Start(new ProcessStartInfo(_owner.BridgeLogPath) { UseShellExecute = true }); }
@@ -268,7 +268,7 @@ internal sealed class SettingsForm : Form
         {
             Text = desc,
             Location = new Point(29, y + 27),
-            Size = new Size(ContentWidth - 29, 28),
+            Size = new Size(ContentWidth - 29, 33),
             Tag = "sub",
         };
         content.Controls.Add(box);
@@ -291,7 +291,7 @@ internal sealed class SettingsForm : Form
         {
             Text = desc,
             Location = new Point(8, y + 25),
-            Size = new Size(330, 28),
+            Size = new Size(330, 34),
             Tag = "sub",
         };
         content.Controls.Add(l);
