@@ -403,7 +403,8 @@ public sealed class MainForm : Form
 
             // Keep the nav bar's back/forward state and URL current.
             core.NavigationStarting += (_, _) => UpdateNavState();
-            core.NavigationCompleted += (_, _) => UpdateNavState();
+            core.NavigationCompleted += OnNavigationCompleted;
+            core.ProcessFailed += OnWebViewProcessFailed;
             core.SourceChanged += (_, _) => UpdateNavState();
             core.HistoryChanged += (_, _) => UpdateNavState();
 
@@ -437,6 +438,73 @@ public sealed class MainForm : Form
             ? CoreWebView2PermissionState.Allow
             : CoreWebView2PermissionState.Deny;
         args.SavesInProfile = true;
+    }
+
+    // ---------- Reconnect resilience ----------
+
+    private string? _lastGoodUrl;
+    private bool _restoreAttempted;
+
+    // Every successful load of a Muse page becomes the place to
+    // return to. A failed navigation (network drop, a reload that
+    // lands wrong) restores it once; if the restore also fails the
+    // flag stays set, so a dead network cannot spin a reload loop.
+    // The next successful load clears the flag and moves the mark.
+    private void OnNavigationCompleted(object? sender, CoreWebView2NavigationCompletedEventArgs args)
+    {
+        UpdateNavState();
+        var core = _web.CoreWebView2;
+        if (core is null)
+        {
+            return;
+        }
+        if (args.IsSuccess)
+        {
+            _restoreAttempted = false;
+            var source = core.Source;
+            if (!string.IsNullOrEmpty(source)
+                && WebNavigation.MayNavigateInApp(source, WebNavigation.IsMuseHost))
+            {
+                _lastGoodUrl = source;
+            }
+            return;
+        }
+        // A navigation the user (or a newer navigation) cancelled is
+        // not a failure to recover from.
+        if (args.WebErrorStatus != CoreWebView2WebErrorStatus.OperationCanceled)
+        {
+            RestoreLastGoodPage(core);
+        }
+    }
+
+    private void OnWebViewProcessFailed(object? sender, CoreWebView2ProcessFailedEventArgs args)
+    {
+        // Only a dead browser or renderer process leaves the page
+        // unusable; frame-level failures recover inside the page.
+        if (args.ProcessFailedKind != CoreWebView2ProcessFailedKind.BrowserProcessExited
+            && args.ProcessFailedKind != CoreWebView2ProcessFailedKind.RenderProcessExited)
+        {
+            return;
+        }
+        var core = _web.CoreWebView2;
+        if (core is not null)
+        {
+            RestoreLastGoodPage(core);
+        }
+    }
+
+    private void RestoreLastGoodPage(CoreWebView2 core)
+    {
+        if (_restoreAttempted)
+        {
+            return;
+        }
+        _restoreAttempted = true;
+        try
+        {
+            core.Navigate(_lastGoodUrl ?? HomeUrl);
+        }
+        catch { /* a later successful load resets the flag */ }
     }
 
     // ---------- Muse Bridge (v2) ----------
