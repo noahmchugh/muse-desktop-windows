@@ -12,9 +12,15 @@ namespace MuseDesktop;
 internal static class WebNavigation
 {
     // muse.ai itself, its subdomains, and the identity-provider hosts
-    // its sign-in flow redirects through.
+    // its sign-in flow redirects through. Muse is a Meta service, and
+    // its sign-in leaves muse.ai for Meta's own hosts before coming
+    // back; if those are not allowed in-app, the first navigation is
+    // cancelled, the sign-in opens in the default browser instead, and
+    // the window is left sitting on a blank page.
     public static bool IsMuseHost(string host) =>
         IsHostOrSubdomain(host, "muse.ai") ||
+        IsHostOrSubdomain(host, "meta.com") ||
+        IsHostOrSubdomain(host, "facebook.com") ||
         host.Equals("accounts.google.com", StringComparison.OrdinalIgnoreCase) ||
         host.Equals("login.microsoftonline.com", StringComparison.OrdinalIgnoreCase) ||
         host.Equals("login.live.com", StringComparison.OrdinalIgnoreCase) ||

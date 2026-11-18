@@ -385,6 +385,7 @@ public sealed class MainForm : Form
                 }
                 else
                 {
+                    LogDivertedNavigation("new-window", args.Uri);
                     WebNavigation.OpenInDefaultBrowser(args.Uri);
                 }
             };
@@ -397,6 +398,7 @@ public sealed class MainForm : Form
                 if (!WebNavigation.MayNavigateInApp(args.Uri, WebNavigation.IsMuseHost))
                 {
                     args.Cancel = true;
+                    LogDivertedNavigation("navigation", args.Uri);
                     WebNavigation.OpenInDefaultBrowser(args.Uri);
                 }
             };
@@ -421,6 +423,23 @@ public sealed class MainForm : Form
                 MessageBoxButtons.OK,
                 MessageBoxIcon.Error);
         }
+    }
+
+    // Every navigation the allowlist diverts to the default browser is
+    // recorded in the data folder. A sign-in flow that gains a new host
+    // otherwise fails silently: the window just sits blank while the
+    // sign-in opens elsewhere. This log names the host that was missed
+    // so it can be added to WebNavigation.
+    private void LogDivertedNavigation(string kind, string? uri)
+    {
+        try
+        {
+            Directory.CreateDirectory(_dataDir);
+            File.AppendAllText(
+                Path.Combine(_dataDir, "nav-divert.log"),
+                $"{DateTimeOffset.Now:u} {kind} {uri}\n");
+        }
+        catch { /* logging must never break navigation handling */ }
     }
 
     // The only permission this window grants is the microphone, and
