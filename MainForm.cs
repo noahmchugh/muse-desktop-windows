@@ -24,6 +24,17 @@ public sealed class MainForm : Form
         "MuseDesktop");
 
     private string SettingsPath => Path.Combine(_dataDir, "window.json");
+    private string AppSettingsPath => Path.Combine(_dataDir, "settings.json");
+
+    // Global hotkey plumbing (see AppSettings.cs). Ids are arbitrary;
+    // they come back in WndProc as the WM_HOTKEY wParam.
+    private const int WmHotkey = 0x0312;
+    private const int HotkeyBringToFrontId = 1;
+    private const int HotkeyMuteId = 2;
+
+    private AppSettings _settings = new();
+    private bool _hotkeysRegistered;
+    private ToolStripMenuItem? _hotkeysItem;
 
     private BridgeServer? _bridge;
     private NotifyIcon? _tray;
@@ -43,6 +54,7 @@ public sealed class MainForm : Form
         try { Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
         BuildNavBar();
         StartBridge();
+        _settings = AppSettings.Load(AppSettingsPath);
         SetupTray();
 
         RestoreSavedBounds();
@@ -236,8 +248,93 @@ public sealed class MainForm : Form
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
+    // ---------- Global hotkeys ----------
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == WmHotkey)
+        {
+            var id = m.WParam.ToInt32();
+            if (id == HotkeyBringToFrontId)
+            {
+                Surface();
+                return;
+            }
+            if (id == HotkeyMuteId)
+            {
+                _ = ToggleMuteAsync();
+                return;
+            }
+        }
+        base.WndProc(ref m);
+    }
+
+    // Registration happens only when the user has enabled hotkeys;
+    // a combination another app already owns simply fails to
+    // register and the other one still can.
+    private void RegisterConfiguredHotkeys()
+    {
+        UnregisterConfiguredHotkeys();
+        if (!_settings.HotkeysEnabled)
+        {
+            return;
+        }
+        var front = GlobalHotkey.Register(Handle, HotkeyBringToFrontId, _settings.BringToFrontHotkey);
+        var mute = GlobalHotkey.Register(Handle, HotkeyMuteId, _settings.MuteHotkey);
+        _hotkeysRegistered = front || mute;
+    }
+
+    private void UnregisterConfiguredHotkeys()
+    {
+        if (!_hotkeysRegistered)
+        {
+            return;
+        }
+        GlobalHotkey.Unregister(Handle, HotkeyBringToFrontId);
+        GlobalHotkey.Unregister(Handle, HotkeyMuteId);
+        _hotkeysRegistered = false;
+    }
+
+    private const string MuteScript = """
+        (() => {
+          const els = document.querySelectorAll('button, [role="button"]');
+          for (const el of els) {
+            const label = ((el.getAttribute('aria-label') || '') + ' ' + (el.title || '')).toLowerCase();
+            if (label.includes('mute') && !label.includes('notification')) {
+              el.click();
+              return 'toggled';
+            }
+          }
+          return 'not-found';
+        })()
+        """;
+
+    // The mute toggle behind the global hotkey and the tray entry.
+    // It clicks the page's own microphone button — a button whose
+    // label mentions muting. If no such control can be found (the
+    // page changed, or no call controls are on screen), it surfaces
+    // the window instead, so the key press is never a silent no-op.
+    private async Task ToggleMuteAsync()
+    {
+        try
+        {
+            var core = _web.CoreWebView2;
+            if (core is not null)
+            {
+                var result = await core.ExecuteScriptAsync(MuteScript);
+                if (result is not null && !result.Contains("not-found"))
+                {
+                    return;
+                }
+            }
+        }
+        catch { /* fall through to surfacing the window */ }
+        Surface();
+    }
+
     private async void OnLoad(object? sender, EventArgs e)
     {
+        RegisterConfiguredHotkeys();
         try
         {
             Directory.CreateDirectory(_dataDir);
@@ -391,6 +488,18 @@ public sealed class MainForm : Form
             UpdateTrayText();
         };
         menu.Items.Add(pauseItem);
+        _hotkeysItem = new ToolStripMenuItem("Enable global hotkeys")
+        {
+            Checked = _settings.HotkeysEnabled,
+        };
+        _hotkeysItem.Click += (_, _) =>
+        {
+            _settings.HotkeysEnabled = !_settings.HotkeysEnabled;
+            _hotkeysItem.Checked = _settings.HotkeysEnabled;
+            _settings.Save(AppSettingsPath);
+            RegisterConfiguredHotkeys();
+        };
+        menu.Items.Add(_hotkeysItem);
         menu.Items.Add("Quit Muse", null, (_, _) => Close());
 
         _tray = new NotifyIcon
@@ -497,6 +606,7 @@ public sealed class MainForm : Form
     {
         try
         {
+            UnregisterConfiguredHotkeys();
             if (_tray is not null) { _tray.Visible = false; _tray.Dispose(); }
             _bridge?.Dispose();
         }
