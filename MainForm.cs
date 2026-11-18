@@ -236,13 +236,36 @@ public sealed class MainForm : Form
             var core = _web.CoreWebView2;
             core.Settings.AreDevToolsEnabled = false;
 
-            // Links that would open a new window stay inside the app instead.
+            // Links that would open a new window stay inside the app
+            // instead — but only for Muse and its sign-in hosts. Any
+            // other site opens in the user's default browser rather
+            // than inside this window's signed-in profile.
             core.NewWindowRequested += (_, args) =>
             {
                 args.Handled = true;
-                if (!string.IsNullOrEmpty(args.Uri))
+                if (string.IsNullOrEmpty(args.Uri))
+                {
+                    return;
+                }
+                if (WebNavigation.MayNavigateInApp(args.Uri, WebNavigation.IsMuseHost))
                 {
                     core.Navigate(args.Uri);
+                }
+                else
+                {
+                    WebNavigation.OpenInDefaultBrowser(args.Uri);
+                }
+            };
+
+            // Same allowlist for in-window navigation: following a link
+            // out of Muse cancels the navigation here and opens the
+            // page in the default browser instead.
+            core.NavigationStarting += (_, args) =>
+            {
+                if (!WebNavigation.MayNavigateInApp(args.Uri, WebNavigation.IsMuseHost))
+                {
+                    args.Cancel = true;
+                    WebNavigation.OpenInDefaultBrowser(args.Uri);
                 }
             };
 
